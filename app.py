@@ -4,7 +4,6 @@ import fitz  # PyMuPDF
 import zipfile
 from io import BytesIO
 import base64
-import time
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
@@ -18,9 +17,6 @@ if "zip_ready" not in st.session_state:
     st.session_state.zip_ready = False
     st.session_state.zip_bytes = None
     st.session_state.images = []
-
-if "download_ready" not in st.session_state:
-    st.session_state.download_ready = False
 
 # ---------------- LOAD LOGO ----------------
 def get_base64(file_path):
@@ -106,10 +102,7 @@ with col2:
 # ---------------- PROCESSING ----------------
 if uploaded_file and extract_clicked:
 
-    # Reset download state
-    st.session_state.download_ready = False
-
-    with st.spinner("🔄 Processing PDF..."):
+    with st.spinner("🔄 Processing PDF & preparing download..."):
 
         pdf_bytes = uploaded_file.read()
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -150,6 +143,7 @@ if uploaded_file and extract_clicked:
             st.session_state.images = []
 
         else:
+            # Create ZIP during processing (key UX fix)
             zip_buffer = BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                 for filename, image_bytes in extracted_images:
@@ -165,7 +159,7 @@ if uploaded_file and extract_clicked:
 # ---------------- RESULTS ----------------
 if st.session_state.zip_ready:
 
-    st.markdown('<div class="success-box">✅ Extraction Complete!</div>', unsafe_allow_html=True)
+    st.markdown('<div class="success-box">✅ Extraction Complete! Files are ready.</div>', unsafe_allow_html=True)
 
     total_images = len(st.session_state.images)
     zip_size_mb = len(st.session_state.zip_bytes) / (1024 * 1024)
@@ -188,34 +182,19 @@ if st.session_state.zip_ready:
 
     st.markdown("---")
 
-    # ---------------- DOWNLOAD UX ----------------
-    col1, col2 = st.columns([3, 1])
+    # ---------------- DOWNLOAD ----------------
+    st.subheader("📦 Download")
 
-    with col1:
-        if not st.session_state.download_ready:
+    st.success("✅ Your files are ready for download")
+    st.caption("⬇️ Download will start immediately after clicking")
 
-            if st.button("📦 Prepare Download", use_container_width=True):
-                with st.spinner("⏳ Please wait, preparing your download..."):
-                    time.sleep(1.5)
-
-                st.session_state.download_ready = True
-                st.rerun()
-
-        else:
-            st.success("✅ Your download is ready!")
-
-            st.download_button(
-                label="📥 Download All Photos (ZIP)",
-                data=st.session_state.zip_bytes,
-                file_name="extracted_photos.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
-
-            st.caption("⬇️ Download will start instantly after clicking")
-
-    with col2:
-        st.info("Files are packaged securely before download.")
+    st.download_button(
+        label="📥 Download All Photos (ZIP)",
+        data=st.session_state.zip_bytes,
+        file_name="extracted_photos.zip",
+        mime="application/zip",
+        use_container_width=True
+    )
 
 # ---------------- FOOTER ----------------
 st.markdown("---")
