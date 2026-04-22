@@ -1,9 +1,13 @@
 # ---------------- IMPORTS ----------------
 import streamlit as st
-import fitz  # PyMuPDF
+import fitz
 import zipfile
 from io import BytesIO
 import base64
+import openai
+
+# ---------------- OPENAI SETUP ----------------
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
@@ -12,97 +16,56 @@ st.set_page_config(
     layout="wide"
 )
 
-# ---------------- SESSION STATE INIT ----------------
+# ---------------- SESSION STATE ----------------
 if "zip_ready" not in st.session_state:
     st.session_state.zip_ready = False
     st.session_state.zip_bytes = None
     st.session_state.images = []
 
-# ---------------- LOAD LOGO ----------------
+# ---------------- LOGO ----------------
 def get_base64(file_path):
     with open(file_path, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
 logo_base64 = get_base64("assets/logo.png")
 
-# ---------------- CUSTOM CSS ----------------
-st.markdown("""
-    <style>
-    .main-title {
-        font-size: 28px;
-        font-weight: 700;
-        margin-bottom: 0px;
-    }
-    .sub-text {
-        color: #6c757d;
-        margin-bottom: 20px;
-    }
-    .card {
-        padding: 20px;
-        border-radius: 12px;
-        background-color: #f8f9fa;
-        margin-bottom: 20px;
-    }
-    .success-box {
-        padding: 15px;
-        border-radius: 10px;
-        background-color: #e6f4ea;
-        color: #1e7e34;
-        font-weight: 500;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# ---------------- AI TAG FUNCTION ----------------
+def classify_image(image_bytes):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Classify the image into one word: receipt, handwritten, wall, document, or other."},
+                {"role": "user", "content": "Classify this image."}
+            ],
+            max_tokens=5
+        )
+        label = response.choices[0].message.content.strip().lower()
+        return label
+    except:
+        return "other"
 
 # ---------------- HEADER ----------------
 st.markdown(f"""
-    <div style="display:flex; align-items:center; gap:15px;">
-        <img src="data:image/png;base64,{logo_base64}" width="60">
-        <div>
-            <div class="main-title">PDF Photo Extractor</div>
-            <div class="sub-text">by Adwallz</div>
-        </div>
-    </div>
+<div style="display:flex; align-items:center; gap:15px;">
+<img src="data:image/png;base64,{logo_base64}" width="60">
+<div>
+<div style="font-size:28px; font-weight:700;">PDF Photo Extractor</div>
+<div style="color:gray;">by Adwallz (AI Powered)</div>
+</div>
+</div>
 """, unsafe_allow_html=True)
 
 # ---------------- SIDEBAR ----------------
 st.sidebar.image("assets/logo.png", width=120)
-st.sidebar.markdown("### ⚙️ Settings")
+min_size = st.sidebar.slider("Min Image Size", 0, 1000, 200)
 
-min_size = st.sidebar.slider(
-    "Minimum Image Size (px)",
-    0, 1000, 200,
-    help="Filter out small icons/logos"
-)
+# ---------------- UPLOAD ----------------
+uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
-st.sidebar.markdown("---")
-st.sidebar.info("Increase size filter to remove unwanted elements")
+if uploaded_file and st.button("🚀 Extract & Tag Photos"):
 
-# ---------------- MAIN LAYOUT ----------------
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-
-    uploaded_file = st.file_uploader("📂 Upload PDF", type=["pdf"])
-    extract_clicked = st.button("🚀 Extract Photos", use_container_width=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with col2:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write("### ℹ️ How it works")
-    st.write("""
-    1. Upload PDF  
-    2. Click extract  
-    3. Preview images  
-    4. Download ZIP  
-    """)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ---------------- PROCESSING ----------------
-if uploaded_file and extract_clicked:
-
-    with st.spinner("🔄 Processing PDF & preparing download..."):
+    with st.spinner("Processing + AI tagging..."):
 
         pdf_bytes = uploaded_file.read()
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -110,14 +73,9 @@ if uploaded_file and extract_clicked:
         extracted_images = []
         seen_xrefs = set()
 
-        progress_bar = st.progress(0)
-        total_pages = len(doc)
-
-        for page_number in range(total_pages):
+        for page_number in range(len(doc)):
             page = doc[page_number]
-            image_list = page.get_images(full=True)
-
-            for img in image_list:
+            for img in page.get_images(full=True):
                 xref = img[0]
 
                 if xref in seen_xrefs:
@@ -130,72 +88,41 @@ if uploaded_file and extract_clicked:
                     continue
 
                 image_bytes = base_image["image"]
-                image_ext = base_image["ext"]
 
-                filename = f"photo_{len(extracted_images)}.{image_ext}"
-                extracted_images.append((filename, image_bytes))
+                # AI TAGGING
+                tag = classify_image(image_bytes)
 
-            progress_bar.progress((page_number + 1) / total_pages)
+                filename = f"{tag}_{len(extracted_images)}.jpg"
 
-        if len(extracted_images) == 0:
-            st.warning("⚠️ No images found. This might be a scanned PDF.")
-            st.session_state.zip_ready = False
-            st.session_state.images = []
+                extracted_images.append((filename, image_bytes, tag))
 
-        else:
-            # Create ZIP during processing (key UX fix)
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                for filename, image_bytes in extracted_images:
-                    zip_file.writestr(filename, image_bytes)
+        # ZIP
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+            for filename, image_bytes, _ in extracted_images:
+                zip_file.writestr(filename, image_bytes)
 
-            zip_buffer.seek(0)
-            zip_bytes = zip_buffer.getvalue()
+        zip_buffer.seek(0)
 
-            st.session_state.zip_bytes = zip_bytes
-            st.session_state.zip_ready = True
-            st.session_state.images = extracted_images
+        st.session_state.zip_ready = True
+        st.session_state.zip_bytes = zip_buffer.getvalue()
+        st.session_state.images = extracted_images
 
 # ---------------- RESULTS ----------------
 if st.session_state.zip_ready:
 
-    st.markdown('<div class="success-box">✅ Extraction Complete! Files are ready.</div>', unsafe_allow_html=True)
+    st.success("✅ Extraction + AI tagging complete")
 
-    total_images = len(st.session_state.images)
-    zip_size_mb = len(st.session_state.zip_bytes) / (1024 * 1024)
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Images Extracted", total_images)
-    col2.metric("ZIP Size (MB)", f"{zip_size_mb:.2f}")
-    col3.metric("Status", "Ready")
-
-    st.markdown("---")
-
-    # Preview
     st.subheader("🔍 Preview")
-    preview_images = st.session_state.images[:12]
-    cols = st.columns(6)
 
-    for i, (filename, img_bytes) in enumerate(preview_images):
-        with cols[i % 6]:
-            st.image(img_bytes, caption=filename, use_container_width=True)
-
-    st.markdown("---")
-
-    # ---------------- DOWNLOAD ----------------
-    st.subheader("📦 Download")
-
-    st.success("✅ Your files are ready for download")
-    st.caption("⬇️ Download will start immediately after clicking")
+    cols = st.columns(5)
+    for i, (filename, img_bytes, tag) in enumerate(st.session_state.images[:10]):
+        with cols[i % 5]:
+            st.image(img_bytes)
+            st.caption(f"{tag.upper()}")
 
     st.download_button(
-        label="📥 Download All Photos (ZIP)",
+        "📥 Download Tagged Photos",
         data=st.session_state.zip_bytes,
-        file_name="extracted_photos.zip",
-        mime="application/zip",
-        use_container_width=True
+        file_name="tagged_photos.zip"
     )
-
-# ---------------- FOOTER ----------------
-st.markdown("---")
-st.caption("© 2026 Adwallz | Internal Tool")
